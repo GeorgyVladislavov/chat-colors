@@ -1,6 +1,7 @@
 {
   "name": "chat-colors",
-  "version": "0.5.12",
+  "version": "0.5.13",
+  "license": "MIT",
   "description": "Цветные статусы чатов Claude: синий — работает, оранжевый — ждёт ответа, зелёный — закончил, красный — ошибка",
   "types": "./types/index.d.ts"
 }

@@ -1,0 +1,5 @@
+{
+  "name": "chat-colors",
+  "owner": { "name": "GeorgyVladislavov" },
+  "plugins": [{ "name": "chat-colors", "source": "./" }]
+}

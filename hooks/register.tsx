@@ -54,6 +54,7 @@ let busySince = 0
 let lastTickAt = 0
 let tasks: ScheduledTask[] | undefined
 let tasksAt = 0
+let isTasksRefusalNoted = false
 let wantedMark: Written | undefined
 let isMarking = false
 // The title the app last refused to change: the person typed it, and the app
@@ -75,13 +76,21 @@ let isPhoneTurn = false
 // asked the person asked.
 let nextTurnBy: 'nobody' | 'others' | 'person' = 'nobody'
 
-// Kept from the last answer when the server cannot be asked this time.
+// Kept from the last answer when the server cannot be asked this time. A
+// refusal counts as an answer: since Claude Code 2.1.325 the app refuses a mod
+// this list in auto mode, and asking again on every pass, every few seconds
+// from every chat, flooded the app's log (README, «Для Claude: в панели нет
+// задач по расписанию»).
 const scheduledTasks = async ($: EngineInterface, now: number) => {
-  if (tasks && now - tasksAt < TASKS_MS) return tasks
+  if (now - tasksAt < TASKS_MS) return tasks
+  tasksAt = now
   const found = await callJson($, 'list_scheduled_tasks', {}, TASKS_SERVER).catch(() => undefined)
   if (Array.isArray(found)) {
     tasks = found as ScheduledTask[]
-    tasksAt = now
+    isTasksRefusalNoted = false
+  } else if (!isTasksRefusalNoted) {
+    isTasksRefusalNoted = true
+    note($, 'список задач по расписанию приложение не дало; спрашиваю раз в минуту')
   }
 
   return tasks

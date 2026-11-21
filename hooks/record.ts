@@ -135,9 +135,27 @@ export const isDialogAsk = (question: string | undefined) =>
 // permission, and what they ask is their own question.
 export const isDialogTool = (tool: string) => tool === 'AskUserQuestion' || tool === 'ExitPlanMode'
 
+// The app's own tools, which can put up a dialog of the app's inside the call
+// (applog.ts). Its task list and closing box never do.
+export const isAppTool = (tool: string) => tool.startsWith('mcp__') && !tool.startsWith('mcp__ccd_turn__')
+
+// What a dialog asks, by the tool the app's log names: its own words for the
+// app's dialogs, those of the tool for the rest.
+export const dialogWords = (tool: string) => {
+  if (/preview_start$/.test(tool)) return 'запустить сервер'
+  if (tool === 'browser:open_site') return 'открыть сайт'
+  if (/^computer:|computer-use/.test(tool) && /request_access$/.test(tool)) return 'доступ к программам'
+  if (/request_access$/.test(tool)) return 'доступ к сайту'
+  if (/reveal_path$/.test(tool)) return 'показать файл'
+  if (/request_directory$/.test(tool)) return 'доступ к папке'
+
+  return toolWords(tool) || tool
+}
+
 // A tool call under way, this chat's or a helper's, and what it has put to the
-// person. The dialog ends when the call does.
-export type ToolRun = { tool: string; input: Record<string, unknown>; asks?: string }
+// person. The dialog ends when the call does, or when the app's log says the
+// person answered the dialog of this id.
+export type ToolRun = { tool: string; input: Record<string, unknown>; asks?: string; appAsk?: string }
 
 const sameInput = (asked: unknown, given: Record<string, unknown>) =>
   typeof asked === 'object' &&

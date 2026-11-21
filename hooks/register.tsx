@@ -1,6 +1,7 @@
 import type { EngineInterface, Register, Timer } from 'claude-code'
 
 import { readFocus } from './appfiles'
+import { appAsks, readLog, stopWatching, watchLog } from './applog'
 import { SERVER, TASKS_SERVER, callJson, loadJournal, myFile, note, selfInfo, sessionId, statusDir } from './host'
 import type { Self } from './host'
 import {
@@ -8,7 +9,9 @@ import {
   PLAN_ASK,
   askerOf,
   closingOf,
+  dialogWords,
   followPlan,
+  isAppTool,
   isDialogAsk,
   isDialogTool,
   isOtherSender,
@@ -28,6 +31,8 @@ import { registerView, showRows, shorten, shownRows, startView } from './view'
 // README has the map of the other files.
 
 const POLL_MS = 4000
+// How often the app's log is read while a call of the app's own tool runs.
+const DIALOG_MS = 2000
 const TASKS_MS = 60000
 const FIRST_MARK_MS = 15000
 const BUSY_MS = 30000
@@ -48,6 +53,9 @@ let leftRunning: readonly BackgroundTask[] = []
 // The tool calls under way: a dialog in front of the person belongs to one of
 // them and ends with it.
 const toolRuns: ToolRun[] = []
+// The app's dialogs its log has told already, while its own tools are watched.
+const toldAsks = new Set<string>()
+let isReadingLog = false
 let plan: PlanItem[] = []
 let isBusy = false
 let busySince = 0
@@ -213,6 +221,64 @@ const ended = async ($: EngineInterface, isPhone = false) => {
 
 // The chat waits on the person: a dialog or a permission.
 const ask = ($: EngineInterface, question: string) => setStatus($, 'waiting', { question, answers: [] })
+
+// A dialog was answered: the next one still up, or back to work. `fields` go
+// with going back to work.
+const dialogOver = ($: EngineInterface, fields: Partial<Mine> = {}) => {
+  if (mine?.status !== 'waiting') return
+  const stillAsking = toolRuns.find(one => one.asks !== undefined)
+  if (stillAsking) patch($, { question: stillAsking.asks, answers: [] })
+  else setStatus($, 'working', { question: undefined, answers: undefined, ...fields })
+}
+
+// No call of the app's own tools under way: its log is not read.
+const stopReadingLog = () => {
+  if (toolRuns.some(one => isAppTool(one.tool))) return false
+  stopWatching()
+  toldAsks.clear()
+
+  return true
+}
+
+// The dialogs the app puts up by itself inside a call of its own tool, which
+// the engine never hears of: its log tells them and their answers (applog.ts).
+const watchDialogs = async ($: EngineInterface) => {
+  if (isReadingLog || stopReadingLog()) return
+  isReadingLog = true
+  try {
+    const me = (await selfInfo($, Date.now()))?.sessionId
+    const text = await readLog($)
+    if (!me || !text) return
+    for (const said of appAsks(text, me)) {
+      if (said.kind === 'answered') {
+        const run = toolRuns.find(one => one.appAsk === said.id)
+        if (!run) continue
+        run.asks = undefined
+        run.appAsk = undefined
+        dialogOver($)
+        continue
+      }
+      if (toldAsks.has(said.id)) continue
+      toldAsks.add(said.id)
+      // The engine asked this one itself and the hook told it: now its answer
+      // is known too.
+      const told = toolRuns.find(one => one.tool === said.tool && one.asks !== undefined && !one.appAsk)
+      if (told) {
+        told.appAsk = said.id
+        continue
+      }
+      const free = toolRuns.filter(one => one.asks === undefined)
+      const run = free.find(one => one.tool === said.tool) ?? free.find(one => isAppTool(one.tool))
+      if (!run) continue
+      run.asks = `${PERMISSION_ASK}: ${dialogWords(said.tool)}`
+      run.appAsk = said.id
+      note($, `окно приложения: ${said.tool}`)
+      ask($, run.asks)
+    }
+  } finally {
+    isReadingLog = false
+  }
+}
 
 // A sleeping chat cannot take its own mark off when its minutes are up: a
 // running one does it for it.
@@ -399,6 +465,9 @@ export const register: Register = on => {
     $.clock.every(POLL_MS, () => {
       void refresh($).catch(() => undefined)
     })
+    $.clock.every(DIALOG_MS, () => {
+      void watchDialogs($).catch(() => undefined)
+    })
 
     return next(e)
   })
@@ -507,17 +576,18 @@ export const register: Register = on => {
     }
     const words = isMine ? toolWords(tool) : ''
     if (words) patch($, { doing: words, doingAt: Date.now() })
+    // A dialog of the app's own is told by its log from here on.
+    if (isAppTool(tool)) await watchLog($).catch(() => undefined)
     const ran = await next(e).finally(() => {
       toolRuns.splice(toolRuns.indexOf(run), 1)
+      if (isAppTool(tool)) stopReadingLog()
     })
     // A dialog this very call put to the person was answered: back to work, or
     // to the next dialog still up. Only such a call: another tool ending says
     // nothing of it, and the closing box's call ends after the turn has, its
     // question having to stay.
     if (run.asks !== undefined && mine?.status === 'waiting') {
-      const stillAsking = toolRuns.find(one => one.asks !== undefined)
-      if (stillAsking) patch($, { question: stillAsking.asks, answers: [] })
-      else setStatus($, 'working', { question: undefined, answers: undefined, ...NOT_DOING })
+      dialogOver($, NOT_DOING)
     } else if (words) {
       patch($, NOT_DOING)
     }
@@ -530,7 +600,10 @@ export const register: Register = on => {
     // A dialog tool comes here too: the question it asks is already told.
     if (!isDialogTool(tool)) {
       const question = `${PERMISSION_ASK}: ${toolWords(tool) || tool}`
-      const asker = askerOf(toolRuns, tool, e.tool_input)
+      // The app's log may have told this very dialog first.
+      const asker =
+        toolRuns.find(one => one.tool === tool && one.appAsk !== undefined && one.asks === question) ??
+        askerOf(toolRuns, tool, e.tool_input)
       if (asker) asker.asks = question
       ask($, question)
     }
